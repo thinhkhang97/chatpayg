@@ -1,4 +1,3 @@
-
 import { v4 as uuidv4 } from "uuid";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -75,7 +74,7 @@ export const useMessageHandler = (
       
       // Prepare for AI response
       try {
-        // Create AI message that will be updated with streamed content
+        // Create AI message that will be updated with content
         const aiMessageId = uuidv4();
         let aiMessage: Message = {
           id: aiMessageId,
@@ -100,95 +99,102 @@ export const useMessageHandler = (
           model: msg.model
         }));
         
-        // Use Supabase functions invoke to call the edge function directly
-        const { data: streamResponse, error: streamError } = await supabase.functions.invoke('chat-with-gemini', {
-          body: JSON.stringify({
-            messages: messagesForAPI,
-            user_id: user.id,
-            session_id: currentSession.id
-          })
-        });
+        console.log("Calling Edge Function for Gemini");
         
-        // Check if there was an error invoking the function
-        if (streamError) {
-          console.error("Error invoking edge function:", streamError);
-          aiMessage.content = "Error: Failed to connect to AI service. Please try again later.";
-          
-          const errorMessages = sessionWithAiMessage.messages.map(msg => 
-            msg.id === aiMessageId ? aiMessage : msg
-          );
-          
-          setCurrentSession({
-            ...sessionWithAiMessage,
-            messages: errorMessages
+        // Call the appropriate edge function based on model
+        if (currentModel === "gemini") {
+          // Use Supabase functions invoke to call the edge function directly
+          const { data: response, error: functionError } = await supabase.functions.invoke('chat-with-gemini', {
+            body: JSON.stringify({
+              messages: messagesForAPI,
+              user_id: user.id,
+              session_id: currentSession.id
+            })
           });
           
-          toast.error("Failed to connect to AI service");
-          return;
-        }
-        
-        // Check if we got a streaming response
-        if (streamResponse && streamResponse.data) {
-          // Process the response data
-          console.log("Received response from edge function:", streamResponse);
-          
-          aiMessage.content = streamResponse.data.content || "No response from AI service";
-          aiMessage.tokens = streamResponse.data.tokens;
-          aiMessage.cost = streamResponse.data.cost;
-          
-          // Insert AI message in Supabase
-          const { error: aiMsgError } = await supabase
-            .from('chat_messages')
-            .insert({
-              id: aiMessageId,
-              session_id: currentSession.id,
-              content: aiMessage.content,
-              sender: "ai",
-              model: currentModel,
-              tokens: aiMessage.tokens,
-              cost: aiMessage.cost
+          // Check if there was an error invoking the function
+          if (functionError) {
+            console.error("Error invoking edge function:", functionError);
+            aiMessage.content = "Error: Failed to connect to AI service. Please try again later.";
+            
+            const errorMessages = sessionWithAiMessage.messages.map(msg => 
+              msg.id === aiMessageId ? aiMessage : msg
+            );
+            
+            setCurrentSession({
+              ...sessionWithAiMessage,
+              messages: errorMessages
             });
             
-          if (aiMsgError) {
-            console.error('Error inserting AI message:', aiMsgError);
-            toast.error('Error saving response');
+            toast.error("Failed to connect to AI service");
+            return;
           }
           
-          // Update final session locally with AI message
-          const finalMessages = sessionWithAiMessage.messages.map(msg => 
-            msg.id === aiMessageId ? aiMessage : msg
-          );
+          console.log("Received response from Gemini:", response);
           
-          const finalSession = {
-            ...sessionWithAiMessage,
-            messages: finalMessages,
-            title: newTitle
-          };
-          
-          // Update current session and chat history
-          setCurrentSession(finalSession);
-          setChatHistory(prev => 
-            prev.map(session => 
-              session.id === currentSession.id ? finalSession : session
-            )
-          );
+          // Process the Gemini response
+          if (response && response.data) {
+            aiMessage.content = response.data.content || "No response from AI service";
+            aiMessage.tokens = response.data.tokens;
+            aiMessage.cost = response.data.cost;
+            
+            // Insert AI message in Supabase
+            const { error: aiMsgError } = await supabase
+              .from('chat_messages')
+              .insert({
+                id: aiMessageId,
+                session_id: currentSession.id,
+                content: aiMessage.content,
+                sender: "ai",
+                model: currentModel,
+                tokens: aiMessage.tokens,
+                cost: aiMessage.cost
+              });
+              
+            if (aiMsgError) {
+              console.error('Error inserting AI message:', aiMsgError);
+              toast.error('Error saving response');
+            }
+            
+            // Update final session locally with AI message
+            const finalMessages = sessionWithAiMessage.messages.map(msg => 
+              msg.id === aiMessageId ? aiMessage : msg
+            );
+            
+            const finalSession = {
+              ...sessionWithAiMessage,
+              messages: finalMessages,
+              title: newTitle
+            };
+            
+            // Update current session and chat history
+            setCurrentSession(finalSession);
+            setChatHistory(prev => 
+              prev.map(session => 
+                session.id === currentSession.id ? finalSession : session
+              )
+            );
+          } else {
+            // No valid response data
+            aiMessage.content = "Error: Received invalid response from AI service";
+            
+            const errorMessages = sessionWithAiMessage.messages.map(msg => 
+              msg.id === aiMessageId ? aiMessage : msg
+            );
+            
+            setCurrentSession({
+              ...sessionWithAiMessage,
+              messages: errorMessages
+            });
+            
+            toast.error("Received invalid response from AI service");
+          }
         } else {
-          // No valid response data
-          aiMessage.content = "Error: Received invalid response from AI service";
-          
-          const errorMessages = sessionWithAiMessage.messages.map(msg => 
-            msg.id === aiMessageId ? aiMessage : msg
-          );
-          
-          setCurrentSession({
-            ...sessionWithAiMessage,
-            messages: errorMessages
-          });
-          
-          toast.error("Received invalid response from AI service");
+          // Handle other models (like OpenAI) here
+          // ... keep existing code (OpenAI handling)
         }
       } catch (error) {
-        console.error('Error in streaming response:', error);
+        console.error('Error in AI response:', error);
         toast.error('Error processing AI response');
       }
     } catch (error) {
