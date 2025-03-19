@@ -55,10 +55,10 @@ const ChatMessage = ({ message }: ChatMessageProps) => {
               {formatDistanceToNow(new Date(message.timestamp), { addSuffix: true })}
             </span>
             
-            {!isUser && message.cost !== undefined && (
+            {!isUser && message.cost !== undefined && message.cost !== null && (
               <span className="ml-auto text-xs flex items-center text-muted-foreground gap-1">
                 <DollarSign size={12} />
-                {message.cost.toFixed(6)} ({message.tokens} tokens)
+                {message.cost.toFixed(6)} ({message.tokens || 0} tokens)
               </span>
             )}
           </div>

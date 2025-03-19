@@ -25,13 +25,13 @@ const CostTracker = () => {
               Current Chat:
             </span>
             <span className="font-medium">
-              {sessionTokens} tokens (${sessionCost.toFixed(4)})
+              {sessionTokens} tokens (${sessionCost ? sessionCost.toFixed(4) : "0.0000"})
             </span>
           </div>
           
           <div className="flex justify-between text-sm">
             <span className="text-muted-foreground">Total Used:</span>
-            <span className="font-medium">${totalCost.toFixed(4)}</span>
+            <span className="font-medium">${totalCost ? totalCost.toFixed(4) : "0.0000"}</span>
           </div>
           
           <div className="pt-1 text-xs text-muted-foreground border-t">
