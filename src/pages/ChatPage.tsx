@@ -1,6 +1,6 @@
 
 import { useEffect, useRef } from "react";
-import { useChat } from "@/contexts/ChatContext";
+import { useChat } from "@/contexts/chat";
 import { SidebarProvider, SidebarTrigger, Sidebar } from "@/components/ui/sidebar";
 import ChatSidebar from "@/components/chat/ChatSidebar";
 import ChatInput from "@/components/chat/ChatInput";

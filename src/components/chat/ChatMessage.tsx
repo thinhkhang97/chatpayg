@@ -1,5 +1,5 @@
 
-import { Message } from "@/contexts/ChatContext";
+import { Message } from "@/contexts/chat";
 import { Avatar } from "@/components/ui/avatar";
 import { formatDistanceToNow } from "date-fns";
 import { DollarSign } from "lucide-react";

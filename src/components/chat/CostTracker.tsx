@@ -1,5 +1,5 @@
 
-import { useChat } from "@/contexts/ChatContext";
+import { useChat } from "@/contexts/chat";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DollarSign, Zap } from "lucide-react";
 

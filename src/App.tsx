@@ -5,7 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
-import { ChatProvider } from "@/contexts/ChatContext";
+import { ChatProvider } from "@/contexts/chat";
 import RouteGuard from "@/components/RouteGuard";
 import LandingPage from "@/pages/LandingPage";
 import ChatPage from "@/pages/ChatPage";

@@ -1,5 +1,5 @@
 
-import { useChat } from "@/contexts/ChatContext";
+import { useChat } from "@/contexts/chat";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
