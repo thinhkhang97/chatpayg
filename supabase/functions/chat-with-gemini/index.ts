@@ -9,8 +9,8 @@ const corsHeaders = {
 };
 
 const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
-// Updated to use Gemini 2.0 Flash
-const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash:streamGenerateContent";
+// Updated to use Gemini 1.5 Flash
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 
 serve(async (req) => {
   // Handle CORS preflight requests
@@ -120,9 +120,9 @@ serve(async (req) => {
     const totalTokens = inputTokens + outputTokens;
     
     // Gemini pricing (approximate as of implementation time)
-    // $0.0010 per 1K input tokens, $0.0020 per 1K output tokens
-    const inputCost = (inputTokens / 1000) * 0.0005; // Adjust rates for Gemini Flash
-    const outputCost = (outputTokens / 1000) * 0.0010;
+    // $0.0007 per 1K input tokens, $0.0014 per 1K output tokens for Gemini 1.5 Flash
+    const inputCost = (inputTokens / 1000) * 0.0007;
+    const outputCost = (outputTokens / 1000) * 0.0014;
     const totalCost = inputCost + outputCost;
     
     console.log(`Completed response for session ${session_id}: ${totalTokens} tokens, $${totalCost.toFixed(6)} cost`);
@@ -134,7 +134,7 @@ serve(async (req) => {
           content: content,
           tokens: totalTokens,
           cost: totalCost,
-          model: "gemini-flash"
+          model: "gemini-1.5-flash"
         }
       }),
       { 

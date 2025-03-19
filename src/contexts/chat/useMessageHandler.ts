@@ -99,10 +99,10 @@ export const useMessageHandler = (
           model: msg.model
         }));
         
-        console.log("Calling Edge Function for Gemini");
-        
         // Call the appropriate edge function based on model
         if (currentModel === "gemini") {
+          console.log("Calling Edge Function for Gemini");
+          
           // Use Supabase functions invoke to call the edge function directly
           const { data: response, error: functionError } = await supabase.functions.invoke('chat-with-gemini', {
             body: JSON.stringify({
@@ -190,8 +190,87 @@ export const useMessageHandler = (
             toast.error("Received invalid response from AI service");
           }
         } else {
-          // Handle other models (like OpenAI) here
-          // ... keep existing code (OpenAI handling)
+          const { data: completion, error: openAiError } = await supabase.functions.invoke('openai-completion', {
+            body: JSON.stringify({
+              messages: messagesForAPI,
+              user_id: user.id,
+              session_id: currentSession.id
+            })
+          });
+  
+          if (openAiError) {
+            console.error("Error invoking OpenAI edge function:", openAiError);
+            aiMessage.content = "Error: Failed to connect to AI service. Please try again later.";
+  
+            const errorMessages = sessionWithAiMessage.messages.map(msg =>
+              msg.id === aiMessageId ? aiMessage : msg
+            );
+  
+            setCurrentSession({
+              ...sessionWithAiMessage,
+              messages: errorMessages
+            });
+  
+            toast.error("Failed to connect to AI service");
+            return;
+          }
+  
+          if (completion && completion.data) {
+            aiMessage.content = completion.data.content || "No response from AI service";
+            aiMessage.tokens = completion.data.tokens;
+            aiMessage.cost = completion.data.cost;
+  
+            // Insert AI message in Supabase
+            const { error: aiMsgError } = await supabase
+              .from('chat_messages')
+              .insert({
+                id: aiMessageId,
+                session_id: currentSession.id,
+                content: aiMessage.content,
+                sender: "ai",
+                model: currentModel,
+                tokens: aiMessage.tokens,
+                cost: aiMessage.cost
+              });
+  
+            if (aiMsgError) {
+              console.error('Error inserting AI message:', aiMsgError);
+              toast.error('Error saving response');
+            }
+  
+            // Update final session locally with AI message
+            const finalMessages = sessionWithAiMessage.messages.map(msg =>
+              msg.id === aiMessageId ? aiMessage : msg
+            );
+  
+            const finalSession = {
+              ...sessionWithAiMessage,
+              messages: finalMessages,
+              title: newTitle
+            };
+  
+            // Update current session and chat history
+            setCurrentSession(finalSession);
+            setChatHistory(prev =>
+              prev.map(session =>
+                session.id === currentSession.id ? finalSession : session
+              )
+            );
+          } else {
+            // No valid response data
+            aiMessage.content = "Error: Received invalid response from AI service";
+  
+            const errorMessages = sessionWithAiMessage.messages.map(msg =>
+              msg.id === aiMessageId ? aiMessage : msg
+            );
+  
+            setCurrentSession({
+              ...sessionWithAiMessage,
+              messages: errorMessages
+            });
+  
+            toast.error("Received invalid response from AI service");
+          }
         }
       } catch (error) {
         console.error('Error in AI response:', error);
