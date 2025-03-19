@@ -1,6 +1,9 @@
 
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { useAuth } from "./AuthContext";
+import { supabase } from "@/integrations/supabase/client";
+import { v4 as uuidv4 } from "uuid";
+import { toast } from "sonner";
 
 export type AIModel = "openai" | "gemini";
 
@@ -55,40 +58,88 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [totalCost, setTotalCost] = useState(0);
+  const [isInitialized, setIsInitialized] = useState(false);
 
-  // Load chat history from localStorage when component mounts or user changes
+  // Fetch chat history from Supabase when user changes
   useEffect(() => {
-    if (user) {
-      const savedHistory = localStorage.getItem("chatHistory");
-      if (savedHistory) {
-        const parsed = JSON.parse(savedHistory);
-        
-        // Convert string dates back to Date objects
-        const historyWithDates = parsed.map((session: any) => ({
-          ...session,
-          createdAt: new Date(session.createdAt),
-          updatedAt: new Date(session.updatedAt),
-          messages: session.messages.map((msg: any) => ({
-            ...msg,
-            timestamp: new Date(msg.timestamp)
-          }))
-        }));
-        
-        setChatHistory(historyWithDates);
-        
-        // Set current session to the most recent one if it exists
-        if (historyWithDates.length > 0) {
-          setCurrentSession(historyWithDates[0]);
-        } else {
-          createNewSession();
-        }
-      } else {
-        createNewSession();
+    const fetchChatHistory = async () => {
+      if (!user) {
+        setChatHistory([]);
+        setCurrentSession(null);
+        setIsInitialized(true);
+        return;
       }
-    } else {
-      setChatHistory([]);
-      setCurrentSession(null);
-    }
+
+      try {
+        // Fetch chat sessions
+        const { data: sessions, error: sessionsError } = await supabase
+          .from('chat_sessions')
+          .select('*')
+          .order('updated_at', { ascending: false });
+
+        if (sessionsError) {
+          toast.error('Error fetching chat history');
+          console.error('Error fetching chat history:', sessionsError);
+          setIsInitialized(true);
+          return;
+        }
+
+        // Transform sessions to our format and fetch messages for each
+        const formattedSessions: ChatSession[] = [];
+        
+        for (const session of sessions) {
+          const { data: messages, error: messagesError } = await supabase
+            .from('chat_messages')
+            .select('*')
+            .eq('session_id', session.id)
+            .order('timestamp', { ascending: true });
+
+          if (messagesError) {
+            console.error('Error fetching messages for session:', messagesError);
+            continue;
+          }
+
+          // Format messages
+          const formattedMessages: Message[] = messages.map((msg) => ({
+            id: msg.id,
+            content: msg.content,
+            sender: msg.sender as "user" | "ai",
+            timestamp: new Date(msg.timestamp),
+            model: msg.model as AIModel,
+            tokens: msg.tokens,
+            cost: msg.cost
+          }));
+
+          // Add session to our formatted list
+          formattedSessions.push({
+            id: session.id,
+            title: session.title,
+            messages: formattedMessages,
+            createdAt: new Date(session.created_at),
+            updatedAt: new Date(session.updated_at),
+            model: session.model as AIModel,
+            totalCost: Number(session.total_cost),
+            totalTokens: session.total_tokens
+          });
+        }
+
+        setChatHistory(formattedSessions);
+
+        // Set current session to the most recent if it exists
+        if (formattedSessions.length > 0) {
+          setCurrentSession(formattedSessions[0]);
+        } else {
+          await createNewSession();
+        }
+      } catch (error) {
+        console.error('Error in fetchChatHistory:', error);
+        toast.error('Error loading chat history');
+      } finally {
+        setIsInitialized(true);
+      }
+    };
+
+    fetchChatHistory();
   }, [user]);
 
   // Calculate total cost whenever chat history changes
@@ -98,16 +149,15 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setTotalCost(newTotalCost);
   }, [chatHistory]);
 
-  // Save chat history to localStorage whenever it changes
-  useEffect(() => {
-    if (user && chatHistory.length > 0) {
-      localStorage.setItem("chatHistory", JSON.stringify(chatHistory));
+  const createNewSession = async () => {
+    if (!user) {
+      toast.error('You must be logged in to create a new chat');
+      return;
     }
-  }, [chatHistory, user]);
 
-  const createNewSession = () => {
+    const sessionId = uuidv4();
     const newSession: ChatSession = {
-      id: crypto.randomUUID(),
+      id: sessionId,
       title: "New Chat",
       messages: [],
       createdAt: new Date(),
@@ -117,8 +167,29 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       totalTokens: 0
     };
     
-    setChatHistory(prev => [newSession, ...prev]);
-    setCurrentSession(newSession);
+    try {
+      // Insert new session in Supabase
+      const { error } = await supabase
+        .from('chat_sessions')
+        .insert({
+          id: sessionId,
+          user_id: user.id,
+          title: "New Chat",
+          model: currentModel
+        });
+
+      if (error) {
+        toast.error('Error creating new chat');
+        console.error('Error creating new chat:', error);
+        return;
+      }
+
+      setChatHistory(prev => [newSession, ...prev]);
+      setCurrentSession(newSession);
+    } catch (error) {
+      console.error('Error in createNewSession:', error);
+      toast.error('Failed to create new chat');
+    }
   };
 
   const selectSession = (sessionId: string) => {
@@ -129,18 +200,40 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const deleteSession = (sessionId: string) => {
-    setChatHistory(prev => prev.filter(session => session.id !== sessionId));
-    
-    if (currentSession?.id === sessionId) {
-      if (chatHistory.length > 1) {
-        // Select the next available session
-        const nextSession = chatHistory.find(session => session.id !== sessionId);
-        setCurrentSession(nextSession || null);
-      } else {
-        // Create a new session if this was the last one
-        createNewSession();
+  const deleteSession = async (sessionId: string) => {
+    if (!user) return;
+
+    try {
+      // Delete from Supabase
+      const { error } = await supabase
+        .from('chat_sessions')
+        .delete()
+        .eq('id', sessionId);
+
+      if (error) {
+        toast.error('Error deleting chat');
+        console.error('Error deleting chat:', error);
+        return;
       }
+
+      // Update local state
+      setChatHistory(prev => prev.filter(session => session.id !== sessionId));
+      
+      if (currentSession?.id === sessionId) {
+        if (chatHistory.length > 1) {
+          // Select the next available session
+          const nextSession = chatHistory.find(session => session.id !== sessionId);
+          setCurrentSession(nextSession || null);
+        } else {
+          // Create a new session if this was the last one
+          await createNewSession();
+        }
+      }
+
+      toast.success('Chat deleted');
+    } catch (error) {
+      console.error('Error in deleteSession:', error);
+      toast.error('Failed to delete chat');
     }
   };
 
@@ -179,73 +272,142 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const sendMessage = async (content: string) => {
-    if (!currentSession || !content.trim() || isProcessing) return;
+    if (!currentSession || !content.trim() || isProcessing || !user) return;
     
     setIsProcessing(true);
     
-    // Create user message
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      content,
-      sender: "user",
-      timestamp: new Date(),
-      model: currentModel
-    };
-    
-    // Update session with user message
-    const updatedSession = {
-      ...currentSession,
-      messages: [...currentSession.messages, userMessage],
-      updatedAt: new Date(),
-      model: currentModel,
-    };
-    
-    setCurrentSession(updatedSession);
-    
-    // Simulate delay for "thinking"
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Generate mock AI response
-    const aiResponseContent = getMockResponse(content, currentModel);
-    
-    // Calculate mock tokens and cost
-    const userUsage = calculateMockUsage(content, currentModel);
-    const aiUsage = calculateMockUsage(aiResponseContent, currentModel);
-    const totalTokens = userUsage.tokens + aiUsage.tokens;
-    const totalMessageCost = userUsage.cost + aiUsage.cost;
-    
-    // Create AI message
-    const aiMessage: Message = {
-      id: crypto.randomUUID(),
-      content: aiResponseContent,
-      sender: "ai",
-      timestamp: new Date(),
-      model: currentModel,
-      tokens: aiUsage.tokens,
-      cost: aiUsage.cost
-    };
-    
-    // Update session with AI message and costs
-    const finalSession = {
-      ...updatedSession,
-      messages: [...updatedSession.messages, aiMessage],
-      totalTokens: (currentSession.totalTokens || 0) + totalTokens,
-      totalCost: (currentSession.totalCost || 0) + totalMessageCost,
-      title: updatedSession.messages.length === 0 ? content.slice(0, 30) + "..." : updatedSession.title
-    };
-    
-    // Update current session
-    setCurrentSession(finalSession);
-    
-    // Update session in history
-    setChatHistory(prev => 
-      prev.map(session => 
-        session.id === currentSession.id ? finalSession : session
-      )
-    );
-    
-    setIsProcessing(false);
+    try {
+      // Create user message
+      const userMessageId = uuidv4();
+      const userMessage: Message = {
+        id: userMessageId,
+        content,
+        sender: "user",
+        timestamp: new Date(),
+        model: currentModel
+      };
+      
+      // Insert user message in Supabase
+      const { error: userMsgError } = await supabase
+        .from('chat_messages')
+        .insert({
+          id: userMessageId,
+          session_id: currentSession.id,
+          content,
+          sender: "user",
+          model: currentModel
+        });
+
+      if (userMsgError) {
+        toast.error('Error sending message');
+        console.error('Error inserting user message:', userMsgError);
+        setIsProcessing(false);
+        return;
+      }
+      
+      // Update session with user message locally
+      const updatedSession = {
+        ...currentSession,
+        messages: [...currentSession.messages, userMessage],
+        updatedAt: new Date(),
+        model: currentModel,
+      };
+      
+      setCurrentSession(updatedSession);
+      
+      // Simulate delay for "thinking"
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Generate mock AI response
+      const aiResponseContent = getMockResponse(content, currentModel);
+      
+      // Calculate mock tokens and cost
+      const userUsage = calculateMockUsage(content, currentModel);
+      const aiUsage = calculateMockUsage(aiResponseContent, currentModel);
+      const totalTokens = userUsage.tokens + aiUsage.tokens;
+      const totalMessageCost = userUsage.cost + aiUsage.cost;
+      
+      // Create AI message
+      const aiMessageId = uuidv4();
+      const aiMessage: Message = {
+        id: aiMessageId,
+        content: aiResponseContent,
+        sender: "ai",
+        timestamp: new Date(),
+        model: currentModel,
+        tokens: aiUsage.tokens,
+        cost: aiUsage.cost
+      };
+
+      // Insert AI message in Supabase
+      const { error: aiMsgError } = await supabase
+        .from('chat_messages')
+        .insert({
+          id: aiMessageId,
+          session_id: currentSession.id,
+          content: aiResponseContent,
+          sender: "ai",
+          model: currentModel,
+          tokens: aiUsage.tokens,
+          cost: aiUsage.cost
+        });
+
+      if (aiMsgError) {
+        console.error('Error inserting AI message:', aiMsgError);
+        toast.error('Error receiving response');
+        setIsProcessing(false);
+        return;
+      }
+      
+      // Update session title if this is the first message
+      const isFirstMessage = currentSession.messages.length === 0;
+      const newTitle = isFirstMessage ? content.slice(0, 30) + "..." : currentSession.title;
+      
+      // Update session in Supabase with new tokens, cost, and title if needed
+      const { error: sessionUpdateError } = await supabase
+        .from('chat_sessions')
+        .update({
+          total_tokens: (currentSession.totalTokens || 0) + totalTokens,
+          total_cost: (currentSession.totalCost || 0) + totalMessageCost,
+          title: newTitle,
+          updated_at: new Date().toISOString(),
+          model: currentModel
+        })
+        .eq('id', currentSession.id);
+        
+      if (sessionUpdateError) {
+        console.error('Error updating session:', sessionUpdateError);
+      }
+      
+      // Update final session locally with AI message and costs
+      const finalSession = {
+        ...updatedSession,
+        messages: [...updatedSession.messages, aiMessage],
+        totalTokens: (currentSession.totalTokens || 0) + totalTokens,
+        totalCost: (currentSession.totalCost || 0) + totalMessageCost,
+        title: newTitle
+      };
+      
+      // Update current session
+      setCurrentSession(finalSession);
+      
+      // Update session in history
+      setChatHistory(prev => 
+        prev.map(session => 
+          session.id === currentSession.id ? finalSession : session
+        )
+      );
+    } catch (error) {
+      console.error('Error in sendMessage:', error);
+      toast.error('Error processing message');
+    } finally {
+      setIsProcessing(false);
+    }
   };
+
+  if (!isInitialized) {
+    return <div className="flex items-center justify-center h-screen">Loading chats...</div>;
+  }
 
   return (
     <ChatContext.Provider 
