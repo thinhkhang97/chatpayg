@@ -23,7 +23,6 @@ serve(async (req) => {
     // Log the incoming request for debugging
     console.log(`Processing request for session ${session_id} from user ${user_id}`);
     console.log(`Number of messages in context: ${messages.length}`);
-    console.log("First message:", messages[0]?.content?.substring(0, 50));
     
     if (!GEMINI_API_KEY) {
       console.error("GEMINI_API_KEY is not set");
@@ -92,7 +91,7 @@ serve(async (req) => {
           
           // Send error to client
           writer.write(encoder.encode(`event: error\ndata: ${JSON.stringify({ 
-            error: `Gemini API error: ${response.status}` 
+            error: `Gemini API error: ${response.status} - ${errorText}` 
           })}\n\n`));
           writer.close();
           return;
@@ -104,7 +103,6 @@ serve(async (req) => {
           throw new Error("Response body is null");
         }
 
-        let accumulatedContent = "";
         let decoder = new TextDecoder();
         let isFirstChunk = true;
         let tokensProcessed = 0;
@@ -149,9 +147,6 @@ serve(async (req) => {
                     isFirstChunk = false;
                   }
                   
-                  // Accumulate content to calculate tokens later
-                  accumulatedContent += text;
-                  
                   // Send the text chunk to the client
                   writer.write(encoder.encode(`event: chunk\ndata: ${JSON.stringify({ 
                     content: text 
@@ -171,7 +166,6 @@ serve(async (req) => {
         }
         
         // Estimate total tokens and cost
-        // This is a rough approximation. In production, you might want to use a tokenizer.
         const inputTokens = Math.ceil(JSON.stringify(messages).length / 4);
         const outputTokens = tokensProcessed;
         const totalTokens = inputTokens + outputTokens;

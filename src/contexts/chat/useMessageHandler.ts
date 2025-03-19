@@ -73,33 +73,8 @@ export const useMessageHandler = (
         }
       }
       
-      // Use Edge Function to stream AI response
+      // Prepare for AI response
       try {
-        // Prepare messages for the API (including context)
-        const messagesForAPI = updatedSession.messages.map(msg => ({
-          sender: msg.sender,
-          content: msg.content,
-          model: msg.model
-        }));
-        
-        // Create the URL for the Edge Function
-        const edgeFunctionUrl = `${window.location.origin}/functions/v1/chat-with-gemini`;
-        console.log("Calling Edge Function at:", edgeFunctionUrl);
-        
-        // Start the streaming response
-        const response = await fetch(edgeFunctionUrl, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${supabase.auth.getSession().then(res => res.data.session?.access_token)}`
-          },
-          body: JSON.stringify({
-            messages: messagesForAPI,
-            user_id: user.id,
-            session_id: currentSession.id
-          })
-        });
-        
         // Create AI message that will be updated with streamed content
         const aiMessageId = uuidv4();
         let aiMessage: Message = {
@@ -118,144 +93,99 @@ export const useMessageHandler = (
         
         setCurrentSession(sessionWithAiMessage);
         
-        if (!response.ok || !response.body) {
-          console.error("Edge function response not OK:", response.status, response.statusText);
-          toast.error(`API Error: ${response.status} ${response.statusText}`);
-          throw new Error(`HTTP error! status: ${response.status}`);
+        // Prepare messages for the API (including context)
+        const messagesForAPI = sessionWithAiMessage.messages.map(msg => ({
+          sender: msg.sender,
+          content: msg.content,
+          model: msg.model
+        }));
+        
+        // Use Supabase functions invoke to call the edge function directly
+        const { data: streamResponse, error: streamError } = await supabase.functions.invoke('chat-with-gemini', {
+          body: JSON.stringify({
+            messages: messagesForAPI,
+            user_id: user.id,
+            session_id: currentSession.id
+          })
+        });
+        
+        // Check if there was an error invoking the function
+        if (streamError) {
+          console.error("Error invoking edge function:", streamError);
+          aiMessage.content = "Error: Failed to connect to AI service. Please try again later.";
+          
+          const errorMessages = sessionWithAiMessage.messages.map(msg => 
+            msg.id === aiMessageId ? aiMessage : msg
+          );
+          
+          setCurrentSession({
+            ...sessionWithAiMessage,
+            messages: errorMessages
+          });
+          
+          toast.error("Failed to connect to AI service");
+          return;
         }
         
-        console.log("Response received, setting up stream reader");
-        
-        // Set up the event stream reader
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        
-        // Process the streaming response
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            console.log("Stream reading complete");
-            break;
+        // Check if we got a streaming response
+        if (streamResponse && streamResponse.data) {
+          // Process the response data
+          console.log("Received response from edge function:", streamResponse);
+          
+          aiMessage.content = streamResponse.data.content || "No response from AI service";
+          aiMessage.tokens = streamResponse.data.tokens;
+          aiMessage.cost = streamResponse.data.cost;
+          
+          // Insert AI message in Supabase
+          const { error: aiMsgError } = await supabase
+            .from('chat_messages')
+            .insert({
+              id: aiMessageId,
+              session_id: currentSession.id,
+              content: aiMessage.content,
+              sender: "ai",
+              model: currentModel,
+              tokens: aiMessage.tokens,
+              cost: aiMessage.cost
+            });
+            
+          if (aiMsgError) {
+            console.error('Error inserting AI message:', aiMsgError);
+            toast.error('Error saving response');
           }
           
-          const chunk = decoder.decode(value, { stream: true });
-          console.log("Received chunk:", chunk);
+          // Update final session locally with AI message
+          const finalMessages = sessionWithAiMessage.messages.map(msg => 
+            msg.id === aiMessageId ? aiMessage : msg
+          );
           
-          const lines = chunk.split('\n\n');
+          const finalSession = {
+            ...sessionWithAiMessage,
+            messages: finalMessages,
+            title: newTitle
+          };
           
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            
-            const eventTypeMatch = line.match(/^event: (.+)$/m);
-            const dataMatch = line.match(/^data: (.+)$/m);
-            
-            if (eventTypeMatch && dataMatch) {
-              const eventType = eventTypeMatch[1].trim();
-              const data = JSON.parse(dataMatch[1].trim());
-              
-              console.log("Event:", eventType, "Data:", data);
-              
-              switch (eventType) {
-                case 'start':
-                  // Model info - we can use this if needed
-                  console.log('AI model started responding:', data.model);
-                  break;
-                  
-                case 'chunk':
-                  // Update the AI message with the new chunk
-                  aiMessage.content += data.content;
-                  
-                  // Update the current session with the updated AI message
-                  const updatedMessages = sessionWithAiMessage.messages.map(msg => 
-                    msg.id === aiMessageId ? { ...aiMessage } : msg
-                  );
-                  
-                  setCurrentSession({
-                    ...sessionWithAiMessage,
-                    messages: updatedMessages
-                  });
-                  break;
-                  
-                case 'done':
-                  // Final update with token count and cost
-                  aiMessage.tokens = data.tokens;
-                  aiMessage.cost = data.cost;
-                  
-                  // Insert AI message in Supabase
-                  const { error: aiMsgError } = await supabase
-                    .from('chat_messages')
-                    .insert({
-                      id: aiMessageId,
-                      session_id: currentSession.id,
-                      content: aiMessage.content,
-                      sender: "ai",
-                      model: data.model,
-                      tokens: data.tokens,
-                      cost: data.cost
-                    });
-                    
-                  if (aiMsgError) {
-                    console.error('Error inserting AI message:', aiMsgError);
-                    toast.error('Error saving response');
-                  }
-                  
-                  // Update session in Supabase with new tokens and cost
-                  const newTotalTokens = (currentSession.totalTokens || 0) + data.tokens;
-                  const newTotalCost = (currentSession.totalCost || 0) + data.cost;
-                  
-                  const { error: sessionUpdateError } = await supabase
-                    .from('chat_sessions')
-                    .update({
-                      total_tokens: newTotalTokens,
-                      total_cost: newTotalCost,
-                      updated_at: new Date().toISOString(),
-                    })
-                    .eq('id', currentSession.id);
-                    
-                  if (sessionUpdateError) {
-                    console.error('Error updating session:', sessionUpdateError);
-                  }
-                  
-                  // Update final session locally with AI message and costs
-                  const finalSession = {
-                    ...sessionWithAiMessage,
-                    messages: sessionWithAiMessage.messages.map(msg => 
-                      msg.id === aiMessageId ? aiMessage : msg
-                    ),
-                    totalTokens: newTotalTokens,
-                    totalCost: newTotalCost,
-                    title: newTitle
-                  };
-                  
-                  // Update current session and chat history
-                  setCurrentSession(finalSession);
-                  setChatHistory(prev => 
-                    prev.map(session => 
-                      session.id === currentSession.id ? finalSession : session
-                    )
-                  );
-                  break;
-                  
-                case 'error':
-                  console.error('Error from Gemini:', data.error);
-                  toast.error(`AI Error: ${data.error}`);
-                  
-                  // Update the AI message to show the error
-                  aiMessage.content += `\n\nError: ${data.error}`;
-                  
-                  // Update the UI with the error message
-                  const errorMessages = sessionWithAiMessage.messages.map(msg => 
-                    msg.id === aiMessageId ? aiMessage : msg
-                  );
-                  
-                  setCurrentSession({
-                    ...sessionWithAiMessage,
-                    messages: errorMessages
-                  });
-                  break;
-              }
-            }
-          }
+          // Update current session and chat history
+          setCurrentSession(finalSession);
+          setChatHistory(prev => 
+            prev.map(session => 
+              session.id === currentSession.id ? finalSession : session
+            )
+          );
+        } else {
+          // No valid response data
+          aiMessage.content = "Error: Received invalid response from AI service";
+          
+          const errorMessages = sessionWithAiMessage.messages.map(msg => 
+            msg.id === aiMessageId ? aiMessage : msg
+          );
+          
+          setCurrentSession({
+            ...sessionWithAiMessage,
+            messages: errorMessages
+          });
+          
+          toast.error("Received invalid response from AI service");
         }
       } catch (error) {
         console.error('Error in streaming response:', error);
