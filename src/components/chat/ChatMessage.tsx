@@ -3,6 +3,7 @@ import { Message } from "@/contexts/ChatContext";
 import { Avatar } from "@/components/ui/avatar";
 import { formatDistanceToNow } from "date-fns";
 import { DollarSign } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 type ChatMessageProps = {
   message: Message;
@@ -12,6 +13,27 @@ const ChatMessage = ({ message }: ChatMessageProps) => {
   const isUser = message.sender === "user";
   const logo = message.model === "openai" ? "O" : "G";
   const modelColor = message.model === "openai" ? "bg-emerald-600" : "bg-blue-600";
+  const [displayedContent, setDisplayedContent] = useState(message.content);
+  const prevContentRef = useRef(message.content);
+  
+  // Setup blinking cursor for AI responses
+  const [showCursor, setShowCursor] = useState(!isUser);
+  
+  useEffect(() => {
+    // If this is an AI message and content has changed, update displayed content
+    if (!isUser && message.content !== prevContentRef.current) {
+      setDisplayedContent(message.content);
+      prevContentRef.current = message.content;
+      
+      // If we're still getting updates, ensure cursor is shown
+      if (!message.cost) {
+        setShowCursor(true);
+      } else {
+        // Response is complete, hide cursor
+        setShowCursor(false);
+      }
+    }
+  }, [message.content, isUser, message.cost]);
   
   return (
     <div 
@@ -33,16 +55,19 @@ const ChatMessage = ({ message }: ChatMessageProps) => {
               {formatDistanceToNow(new Date(message.timestamp), { addSuffix: true })}
             </span>
             
-            {!isUser && message.cost && (
+            {!isUser && message.cost !== undefined && (
               <span className="ml-auto text-xs flex items-center text-muted-foreground gap-1">
                 <DollarSign size={12} />
-                {message.cost.toFixed(4)} ({message.tokens} tokens)
+                {message.cost.toFixed(6)} ({message.tokens} tokens)
               </span>
             )}
           </div>
           
           <div className="text-foreground whitespace-pre-wrap">
-            {message.content}
+            {displayedContent}
+            {showCursor && (
+              <span className="animate-pulse inline-block w-2 h-4 bg-foreground ml-1"></span>
+            )}
           </div>
         </div>
       </div>

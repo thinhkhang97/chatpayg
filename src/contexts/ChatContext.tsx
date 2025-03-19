@@ -1,4 +1,3 @@
-
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { useAuth } from "./AuthContext";
 import { supabase } from "@/integrations/supabase/client";
@@ -53,7 +52,7 @@ export const useChat = () => {
 
 export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user } = useAuth();
-  const [currentModel, setCurrentModel] = useState<AIModel>("openai");
+  const [currentModel, setCurrentModel] = useState<AIModel>("gemini");
   const [chatHistory, setChatHistory] = useState<ChatSession[]>([]);
   const [currentSession, setCurrentSession] = useState<ChatSession | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -237,40 +236,6 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const getMockResponse = (userMessage: string, model: AIModel): string => {
-    if (model === "openai") {
-      const responses = [
-        "As an OpenAI model, I can help you with that. Here's what I think...",
-        "Based on my training data, I would suggest considering...",
-        "I've analyzed your question and here's my response from OpenAI...",
-        "That's an interesting question. From the OpenAI perspective...",
-        "Let me process that for you. According to my understanding..."
-      ];
-      return responses[Math.floor(Math.random() * responses.length)];
-    } else {
-      const responses = [
-        "Gemini here! I've processed your request and found that...",
-        "From my Gemini knowledge base, I can tell you that...",
-        "As Google's Gemini model, I would approach this by...",
-        "Interesting query! My Gemini algorithms suggest...",
-        "I've searched through my Gemini training data and can confirm..."
-      ];
-      return responses[Math.floor(Math.random() * responses.length)];
-    }
-  };
-
-  // Calculate mock token usage and cost
-  const calculateMockUsage = (message: string, model: AIModel) => {
-    // Mock calculation: 1 token per character, minimum 5 tokens
-    const tokens = Math.max(5, Math.ceil(message.length / 2));
-    
-    // Different pricing for different models
-    const rate = model === "openai" ? 0.0005 : 0.0003;
-    const cost = tokens * rate;
-    
-    return { tokens, cost };
-  };
-
   const sendMessage = async (content: string) => {
     if (!currentSession || !content.trim() || isProcessing || !user) return;
     
@@ -315,88 +280,192 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       setCurrentSession(updatedSession);
       
-      // Simulate delay for "thinking"
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Generate mock AI response
-      const aiResponseContent = getMockResponse(content, currentModel);
-      
-      // Calculate mock tokens and cost
-      const userUsage = calculateMockUsage(content, currentModel);
-      const aiUsage = calculateMockUsage(aiResponseContent, currentModel);
-      const totalTokens = userUsage.tokens + aiUsage.tokens;
-      const totalMessageCost = userUsage.cost + aiUsage.cost;
-      
-      // Create AI message
-      const aiMessageId = uuidv4();
-      const aiMessage: Message = {
-        id: aiMessageId,
-        content: aiResponseContent,
-        sender: "ai",
-        timestamp: new Date(),
-        model: currentModel,
-        tokens: aiUsage.tokens,
-        cost: aiUsage.cost
-      };
-
-      // Insert AI message in Supabase
-      const { error: aiMsgError } = await supabase
-        .from('chat_messages')
-        .insert({
-          id: aiMessageId,
-          session_id: currentSession.id,
-          content: aiResponseContent,
-          sender: "ai",
-          model: currentModel,
-          tokens: aiUsage.tokens,
-          cost: aiUsage.cost
-        });
-
-      if (aiMsgError) {
-        console.error('Error inserting AI message:', aiMsgError);
-        toast.error('Error receiving response');
-        setIsProcessing(false);
-        return;
-      }
-      
       // Update session title if this is the first message
       const isFirstMessage = currentSession.messages.length === 0;
       const newTitle = isFirstMessage ? content.slice(0, 30) + "..." : currentSession.title;
       
-      // Update session in Supabase with new tokens, cost, and title if needed
-      const { error: sessionUpdateError } = await supabase
-        .from('chat_sessions')
-        .update({
-          total_tokens: (currentSession.totalTokens || 0) + totalTokens,
-          total_cost: (currentSession.totalCost || 0) + totalMessageCost,
-          title: newTitle,
-          updated_at: new Date().toISOString(),
-          model: currentModel
-        })
-        .eq('id', currentSession.id);
-        
-      if (sessionUpdateError) {
-        console.error('Error updating session:', sessionUpdateError);
+      // Update the session title in Supabase if it's the first message
+      if (isFirstMessage) {
+        const { error: titleUpdateError } = await supabase
+          .from('chat_sessions')
+          .update({ title: newTitle })
+          .eq('id', currentSession.id);
+          
+        if (titleUpdateError) {
+          console.error('Error updating session title:', titleUpdateError);
+        }
       }
       
-      // Update final session locally with AI message and costs
-      const finalSession = {
-        ...updatedSession,
-        messages: [...updatedSession.messages, aiMessage],
-        totalTokens: (currentSession.totalTokens || 0) + totalTokens,
-        totalCost: (currentSession.totalCost || 0) + totalMessageCost,
-        title: newTitle
-      };
-      
-      // Update current session
-      setCurrentSession(finalSession);
-      
-      // Update session in history
-      setChatHistory(prev => 
-        prev.map(session => 
-          session.id === currentSession.id ? finalSession : session
-        )
-      );
+      // Use Edge Function to stream AI response from Gemini
+      try {
+        // Prepare messages for the API (including context)
+        const messagesForAPI = updatedSession.messages.map(msg => ({
+          sender: msg.sender,
+          content: msg.content,
+          model: msg.model
+        }));
+        
+        // Start the streaming response
+        const response = await fetch(`${window.location.origin}/functions/v1/chat-with-gemini`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: messagesForAPI,
+            user_id: user.id,
+            session_id: currentSession.id
+          })
+        });
+        
+        // Create AI message that will be updated with streamed content
+        const aiMessageId = uuidv4();
+        let aiMessage: Message = {
+          id: aiMessageId,
+          content: "",
+          sender: "ai",
+          timestamp: new Date(),
+          model: currentModel
+        };
+        
+        // Update the session with the initial empty AI message
+        const sessionWithAiMessage = {
+          ...updatedSession,
+          messages: [...updatedSession.messages, aiMessage]
+        };
+        
+        setCurrentSession(sessionWithAiMessage);
+        
+        if (!response.ok || !response.body) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        // Set up the event stream reader
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        
+        // Process the streaming response
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n\n');
+          
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            
+            const eventTypeMatch = line.match(/^event: (.+)$/m);
+            const dataMatch = line.match(/^data: (.+)$/m);
+            
+            if (eventTypeMatch && dataMatch) {
+              const eventType = eventTypeMatch[1].trim();
+              const data = JSON.parse(dataMatch[1].trim());
+              
+              switch (eventType) {
+                case 'start':
+                  // Model info - we can use this if needed
+                  console.log('AI model started responding:', data.model);
+                  break;
+                  
+                case 'chunk':
+                  // Update the AI message with the new chunk
+                  aiMessage.content += data.content;
+                  
+                  // Update the current session with the updated AI message
+                  const updatedMessages = sessionWithAiMessage.messages.map(msg => 
+                    msg.id === aiMessageId ? { ...aiMessage } : msg
+                  );
+                  
+                  setCurrentSession({
+                    ...sessionWithAiMessage,
+                    messages: updatedMessages
+                  });
+                  break;
+                  
+                case 'done':
+                  // Final update with token count and cost
+                  aiMessage.tokens = data.tokens;
+                  aiMessage.cost = data.cost;
+                  
+                  // Insert AI message in Supabase
+                  const { error: aiMsgError } = await supabase
+                    .from('chat_messages')
+                    .insert({
+                      id: aiMessageId,
+                      session_id: currentSession.id,
+                      content: aiMessage.content,
+                      sender: "ai",
+                      model: data.model,
+                      tokens: data.tokens,
+                      cost: data.cost
+                    });
+                    
+                  if (aiMsgError) {
+                    console.error('Error inserting AI message:', aiMsgError);
+                    toast.error('Error saving response');
+                  }
+                  
+                  // Update session in Supabase with new tokens and cost
+                  const newTotalTokens = (currentSession.totalTokens || 0) + data.tokens;
+                  const newTotalCost = (currentSession.totalCost || 0) + data.cost;
+                  
+                  const { error: sessionUpdateError } = await supabase
+                    .from('chat_sessions')
+                    .update({
+                      total_tokens: newTotalTokens,
+                      total_cost: newTotalCost,
+                      updated_at: new Date().toISOString(),
+                    })
+                    .eq('id', currentSession.id);
+                    
+                  if (sessionUpdateError) {
+                    console.error('Error updating session:', sessionUpdateError);
+                  }
+                  
+                  // Update final session locally with AI message and costs
+                  const finalSession = {
+                    ...sessionWithAiMessage,
+                    messages: sessionWithAiMessage.messages.map(msg => 
+                      msg.id === aiMessageId ? aiMessage : msg
+                    ),
+                    totalTokens: newTotalTokens,
+                    totalCost: newTotalCost,
+                    title: newTitle
+                  };
+                  
+                  // Update current session and chat history
+                  setCurrentSession(finalSession);
+                  setChatHistory(prev => 
+                    prev.map(session => 
+                      session.id === currentSession.id ? finalSession : session
+                    )
+                  );
+                  break;
+                  
+                case 'error':
+                  console.error('Error from Gemini:', data.error);
+                  toast.error(`AI Error: ${data.error}`);
+                  
+                  // Update the AI message to show the error
+                  aiMessage.content += `\n\nError: ${data.error}`;
+                  
+                  // Update the UI with the error message
+                  const errorMessages = sessionWithAiMessage.messages.map(msg => 
+                    msg.id === aiMessageId ? aiMessage : msg
+                  );
+                  
+                  setCurrentSession({
+                    ...sessionWithAiMessage,
+                    messages: errorMessages
+                  });
+                  break;
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error in streaming response:', error);
+        toast.error('Error processing AI response');
+      }
     } catch (error) {
       console.error('Error in sendMessage:', error);
       toast.error('Error processing message');
