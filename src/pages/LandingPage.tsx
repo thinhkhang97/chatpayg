@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/contexts/AuthContext";
 import { MessageSquare, Zap, History, DollarSign } from "lucide-react";
+import { toast } from "sonner";
 
 const LandingPage = () => {
   const [isLoading, setIsLoading] = useState(false);
@@ -15,6 +16,27 @@ const LandingPage = () => {
 
   const handleAuth = async (type: "login" | "signup") => {
     setIsLoading(true);
+    
+    // Basic validation
+    if (!email) {
+      toast.error("Email is required");
+      setIsLoading(false);
+      return;
+    }
+    
+    if (!password) {
+      toast.error("Password is required");
+      setIsLoading(false);
+      return;
+    }
+    
+    // Password length validation for signup
+    if (type === "signup" && password.length < 6) {
+      toast.error("Password must be at least 6 characters");
+      setIsLoading(false);
+      return;
+    }
+    
     try {
       if (type === "login") {
         await login(email, password);
@@ -120,7 +142,7 @@ const LandingPage = () => {
               <Button 
                 className="w-full mt-6" 
                 onClick={() => handleAuth("login")}
-                disabled={isLoading || !email || !password}
+                disabled={isLoading}
               >
                 {isLoading ? (
                   <span className="flex items-center">
@@ -160,7 +182,7 @@ const LandingPage = () => {
               <Button 
                 className="w-full mt-6" 
                 onClick={() => handleAuth("signup")}
-                disabled={isLoading || !email || !password}
+                disabled={isLoading}
               >
                 {isLoading ? (
                   <span className="flex items-center">
@@ -175,8 +197,8 @@ const LandingPage = () => {
           </Tabs>
           
           <div className="text-center text-sm mt-8 text-muted-foreground">
-            <p>This is a demo app with mock authentication</p>
-            <p>No real authentication or charges will occur</p>
+            <p>By signing up, you agree to our terms of service</p>
+            <p>Your data is securely stored in Supabase</p>
           </div>
         </div>
       </div>

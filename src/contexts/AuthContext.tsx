@@ -1,18 +1,15 @@
 
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { toast } from "sonner";
-
-type User = {
-  id: string;
-  email: string;
-};
+import { supabase } from "@/integrations/supabase/client";
+import { User } from "@supabase/supabase-js";
 
 type AuthContextType = {
   user: User | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
   signup: (email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -30,59 +27,91 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Check for saved user in localStorage
-    const savedUser = localStorage.getItem("user");
-    if (savedUser) {
-      setUser(JSON.parse(savedUser));
-    }
-    setIsLoading(false);
+    // Set up auth state listener
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        setUser(session?.user || null);
+        setIsLoading(false);
+      }
+    );
+
+    // Check for existing session
+    const checkUser = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        setUser(session?.user || null);
+      } catch (error) {
+        console.error("Error checking user session:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    checkUser();
+
+    // Cleanup subscription
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
   }, []);
 
   const login = async (email: string, password: string) => {
     setIsLoading(true);
-    
-    // Simulate API request delay
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Mock authentication - in a real app, this would be an API call
-    if (password.length < 6) {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      if (data.user) {
+        toast.success("Logged in successfully!");
+      }
+    } catch (error) {
+      console.error("Login error:", error);
+      toast.error("An unexpected error occurred during login");
+    } finally {
       setIsLoading(false);
-      toast.error("Invalid credentials. Password must be at least 6 characters.");
-      return;
     }
-    
-    const newUser = { id: crypto.randomUUID(), email };
-    setUser(newUser);
-    localStorage.setItem("user", JSON.stringify(newUser));
-    toast.success("Logged in successfully!");
-    setIsLoading(false);
   };
 
   const signup = async (email: string, password: string) => {
     setIsLoading(true);
-    
-    // Simulate API request delay
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Mock signup - in a real app, this would be an API call
-    if (password.length < 6) {
+    try {
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+      });
+
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+
+      if (data.user) {
+        toast.success("Account created successfully! Please check your email for confirmation.");
+      }
+    } catch (error) {
+      console.error("Signup error:", error);
+      toast.error("An unexpected error occurred during signup");
+    } finally {
       setIsLoading(false);
-      toast.error("Password must be at least 6 characters.");
-      return;
     }
-    
-    const newUser = { id: crypto.randomUUID(), email };
-    setUser(newUser);
-    localStorage.setItem("user", JSON.stringify(newUser));
-    toast.success("Account created successfully!");
-    setIsLoading(false);
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem("user");
-    localStorage.removeItem("chatHistory");
-    toast.info("Logged out successfully");
+  const logout = async () => {
+    try {
+      await supabase.auth.signOut();
+      localStorage.removeItem("chatHistory");
+      toast.info("Logged out successfully");
+    } catch (error) {
+      console.error("Logout error:", error);
+      toast.error("An error occurred during logout");
+    }
   };
 
   return (
