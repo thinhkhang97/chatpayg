@@ -23,6 +23,18 @@ serve(async (req) => {
     // Log the incoming request for debugging
     console.log(`Processing request for session ${session_id} from user ${user_id}`);
     console.log(`Number of messages in context: ${messages.length}`);
+    console.log("First message:", messages[0]?.content?.substring(0, 50));
+    
+    if (!GEMINI_API_KEY) {
+      console.error("GEMINI_API_KEY is not set");
+      return new Response(
+        JSON.stringify({ error: "API key not configured" }),
+        { 
+          status: 500, 
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+        }
+      );
+    }
 
     // Transform messages to Gemini format
     const geminiMessages = messages.map(msg => {
@@ -63,6 +75,7 @@ serve(async (req) => {
 
         // Get the full URL with API key
         const url = `${GEMINI_API_URL}?key=${GEMINI_API_KEY}`;
+        console.log(`Calling Gemini API at ${GEMINI_API_URL}`);
 
         // Make the request to Gemini
         const response = await fetch(url, {
@@ -102,6 +115,8 @@ serve(async (req) => {
           if (done) break;
           
           const chunk = decoder.decode(value, { stream: true });
+          console.log("Raw chunk from Gemini:", chunk.substring(0, 100));
+          
           const lines = chunk.split("\n");
           
           for (const line of lines) {
@@ -113,6 +128,7 @@ serve(async (req) => {
               
               try {
                 const parsedData = JSON.parse(data);
+                console.log("Parsed data:", JSON.stringify(parsedData).substring(0, 100));
                 
                 // Extract text from Gemini's response
                 if (parsedData.candidates && 
@@ -123,6 +139,7 @@ serve(async (req) => {
                     parsedData.candidates[0].content.parts[0].text) {
                   
                   const text = parsedData.candidates[0].content.parts[0].text;
+                  console.log("Extracted text:", text.substring(0, 50));
                   
                   // For the first chunk, send model info
                   if (isFirstChunk) {
@@ -142,6 +159,8 @@ serve(async (req) => {
                   
                   // Estimate tokens (rough approximation)
                   tokensProcessed += Math.ceil(text.length / 4);
+                } else {
+                  console.log("No text content found in response");
                 }
               } catch (e) {
                 console.error("Error parsing JSON from Gemini:", e);

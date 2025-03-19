@@ -73,7 +73,7 @@ export const useMessageHandler = (
         }
       }
       
-      // Use Edge Function to stream AI response from Gemini
+      // Use Edge Function to stream AI response
       try {
         // Prepare messages for the API (including context)
         const messagesForAPI = updatedSession.messages.map(msg => ({
@@ -82,10 +82,17 @@ export const useMessageHandler = (
           model: msg.model
         }));
         
+        // Create the URL for the Edge Function
+        const edgeFunctionUrl = `${window.location.origin}/functions/v1/chat-with-gemini`;
+        console.log("Calling Edge Function at:", edgeFunctionUrl);
+        
         // Start the streaming response
-        const response = await fetch(`${window.location.origin}/functions/v1/chat-with-gemini`, {
+        const response = await fetch(edgeFunctionUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${supabase.auth.getSession().then(res => res.data.session?.access_token)}`
+          },
           body: JSON.stringify({
             messages: messagesForAPI,
             user_id: user.id,
@@ -112,8 +119,12 @@ export const useMessageHandler = (
         setCurrentSession(sessionWithAiMessage);
         
         if (!response.ok || !response.body) {
+          console.error("Edge function response not OK:", response.status, response.statusText);
+          toast.error(`API Error: ${response.status} ${response.statusText}`);
           throw new Error(`HTTP error! status: ${response.status}`);
         }
+        
+        console.log("Response received, setting up stream reader");
         
         // Set up the event stream reader
         const reader = response.body.getReader();
@@ -122,9 +133,14 @@ export const useMessageHandler = (
         // Process the streaming response
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            console.log("Stream reading complete");
+            break;
+          }
           
           const chunk = decoder.decode(value, { stream: true });
+          console.log("Received chunk:", chunk);
+          
           const lines = chunk.split('\n\n');
           
           for (const line of lines) {
@@ -136,6 +152,8 @@ export const useMessageHandler = (
             if (eventTypeMatch && dataMatch) {
               const eventType = eventTypeMatch[1].trim();
               const data = JSON.parse(dataMatch[1].trim());
+              
+              console.log("Event:", eventType, "Data:", data);
               
               switch (eventType) {
                 case 'start':
